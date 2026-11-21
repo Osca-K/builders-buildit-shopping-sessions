@@ -25,6 +25,21 @@ def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+class StageConnection:
+    """Optional stage timings for reproducible profiling on public datasets."""
+    def __init__(self, connection):
+        self.connection = connection
+        self.profile = os.environ.get('PROFILE_PIPELINE') == '1'
+
+    def execute(self, sql, parameters=None):
+        started = time.perf_counter()
+        result = self.connection.execute(sql) if parameters is None else self.connection.execute(sql, parameters)
+        label = re.match(r'(?:CREATE (?:TABLE|MACRO)|INSERT INTO|DROP TABLE|COPY)\s+\w+', sql)
+        if self.profile and label:
+            print(f'Stage {label[0]}: {time.perf_counter()-started:.3f}s', file=sys.stderr)
+        return result
+
+
 def raw_rows(folder, count):
     field = r'(?:"[^",\n]*"|[^",\n]*)'
     valid = '^' + ','.join([field] * count) + '$'
@@ -97,7 +112,7 @@ def main():
     output = Path(os.environ.get('OUTPUT_DIR', sys.argv[2] if len(sys.argv) > 2 else '/output'))
     scratch = Path(os.environ.get('SCRATCH_DIR', str(output / 'scratch')))
     scratch.mkdir(parents=True, exist_ok=True)
-    con = duckdb.connect()
+    con = StageConnection(duckdb.connect())
     con.execute(f"SET threads={int(os.environ.get('NCPU', '8'))}")
     con.execute(f"SET memory_limit='{float(os.environ.get('MEM_GB','24'))*.75}GB'")
     con.execute(f"SET temp_directory={quote(scratch.as_posix())}")

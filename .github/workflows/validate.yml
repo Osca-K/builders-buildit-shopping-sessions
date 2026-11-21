@@ -13,5 +13,5 @@ jobs:
       - name: Generate official seed-1 dev set
         run: cargo run --release --manifest-path generator/Cargo.toml -- --seed 1 --events 1000000 --clicks 250000 --output dev
       - name: Dev run with scorer filesystem restrictions and smaller CI resources
-        run: mkdir -p output scratch && chmod 777 output scratch && /usr/bin/time -v docker run --rm --network none --cpus 4 --memory 12g --memory-swap 12g --read-only --tmpfs /tmp:rw,size=64m --user 1000:1000 -e DATA_DIR=/data -e OUTPUT_DIR=/output -e SCRATCH_DIR=/scratch -e HOME=/scratch -e NCPU=4 -e MEM_GB=12 -v "$PWD/dev:/data:ro" -v "$PWD/output:/output" -v "$PWD/scratch:/scratch" shopping
+        run: mkdir -p output scratch && chmod 777 output scratch && /usr/bin/time -v docker run --rm --network none --cpus 4 --memory 12g --memory-swap 12g --read-only --tmpfs /tmp:rw,size=64m --user 1000:1000 -e DATA_DIR=/data -e OUTPUT_DIR=/output -e SCRATCH_DIR=/scratch -e HOME=/scratch -e NCPU=4 -e MEM_GB=12 -e PROFILE_PIPELINE=1 -v "$PWD/dev:/data:ro" -v "$PWD/output:/output" -v "$PWD/scratch:/scratch" shopping
       - run: python scripts/compare.py output dev-answer
