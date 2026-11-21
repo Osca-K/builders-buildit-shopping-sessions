@@ -130,10 +130,16 @@ def main():
     start, end = con.execute('SELECT ms(?),ms(?)', [manifest['window_start'], manifest['window_end']]).fetchone()
     con.execute('CREATE TABLE people(user_id VARCHAR, person VARCHAR)')
     mapping = link_map(data / 'links')
-    # Batched inserts keep the union-find independent of optional data libraries.
+    # JSONL preserves every byte-valid ID, including CR and whitespace. Binding
+    # large Python lists into DuckDB caused most measured runtime; its native
+    # JSON reader loads the same map without the expensive parameter conversion.
     if mapping:
-        con.execute('INSERT INTO people SELECT unnest(?::VARCHAR[]),unnest(?::VARCHAR[])',
-                    [[x[0] for x in mapping],[x[1] for x in mapping]])
+        mapping_file = scratch / 'identity-map.jsonl'
+        with mapping_file.open('w', encoding='utf-8', newline='\n') as stream:
+            for alias, person in mapping:
+                stream.write(json.dumps({'user_id':alias,'person':person},ensure_ascii=False,separators=(',',':'))+'\n')
+        con.execute(f"INSERT INTO people SELECT * FROM read_json({quote(mapping_file.as_posix())},"
+                    "format='newline_delimited',columns={'user_id':'VARCHAR','person':'VARCHAR'})")
     con.execute(f"CREATE TABLE products AS SELECT * FROM read_csv({quote((data/'products.csv').as_posix())}, all_varchar=true)")
     con.execute(f"CREATE TABLE campaigns AS SELECT * FROM read_csv({quote((data/'campaigns.csv').as_posix())}, all_varchar=true)")
     con.execute(f"""CREATE TABLE events AS
