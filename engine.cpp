@@ -85,9 +85,28 @@ bool f1(S s,I&v){return s.size()==20&&s[19]=='Z'&&ts(s,v);}
 bool price(S s,I&v){if(s.empty())return false;I n=0;for(char c:s){if(!digit(c))return false;n=n*10+c-'0';if(n>10000000)return false;}v=n;return n>0;}
 I day(I ms){return ms/DAY-(ms%DAY<0);}
 std::string jsonvalue(const std::string&t,const char*k){auto p=t.find('"'+std::string(k)+'"');if(p==std::string::npos)throw std::runtime_error("manifest key missing");p=t.find(':',p);if(p==std::string::npos)throw std::runtime_error("manifest malformed");p=t.find('"',p);auto e=t.find('"',p+1);if(p==std::string::npos||e==std::string::npos)throw std::runtime_error("manifest malformed");return t.substr(p+1,e-p-1);}
+
+// Exact 7-bit strings of up to nine bytes fit in one word, including length.
+// A sentinel follows the final byte. Non-ASCII and longer strings use the
+// original full-value map; no ID spelling or generator-specific radix is assumed.
+struct PackedIds{
+ ankerl::unordered_dense::map<Q,U> short_ids;Map<U> long_ids;
+ static Q key(S name){
+  if(name.size()>9)return 0;
+  Q bytes=0;if(name.size()>=8)std::memcpy(&bytes,name.data(),8);else if(!name.empty())std::memcpy(&bytes,name.data(),name.size());
+  if(bytes&UINT64_C(0x8080808080808080))return 0;
+  Q packed=_pext_u64(bytes,UINT64_C(0x7f7f7f7f7f7f7f7f));
+  if(name.size()==9){unsigned last=static_cast<unsigned char>(name[8]);if(last&128)return 0;packed|=Q(last)<<56;}
+  return packed|(Q(1)<<(name.size()*7));
+ }
+ U get(S name)const{Q code=key(name);if(code){auto it=short_ids.find(code);return it==short_ids.end()?NONE:it->second;}
+  auto it=long_ids.find(name);return it==long_ids.end()?NONE:it->second;}
+ void emplace(S name,U value){Q code=key(name);if(code)short_ids.emplace(code,value);else long_ids.emplace(name,value);}
+ void clear(){ankerl::unordered_dense::map<Q,U>().swap(short_ids);Map<U>().swap(long_ids);}
+};
 struct People{
- Map<U>ids;std::vector<S>names;std::vector<U>parent,size,minimum;
- U intern(S s){auto it=ids.find(s);if(it!=ids.end())return it->second;if(names.size()>=NONE)throw std::runtime_error("too many IDs");U id=names.size();ids.emplace(s,id);names.push_back(s);parent.push_back(id);size.push_back(1);minimum.push_back(id);return id;}
+ PackedIds ids;std::vector<S>names;std::vector<U>parent,size,minimum;
+ U intern(S s){U known=ids.get(s);if(known!=NONE)return known;if(names.size()>=NONE)throw std::runtime_error("too many IDs");U id=names.size();ids.emplace(s,id);names.push_back(s);parent.push_back(id);size.push_back(1);minimum.push_back(id);return id;}
  U root(U x){U r=x;while(parent[r]!=r)r=parent[r];while(parent[x]!=x){U n=parent[x];parent[x]=r;x=n;}return r;}
  void unite(U a,U b){a=root(a);b=root(b);if(a==b)return;if(size[a]<size[b])std::swap(a,b);parent[b]=a;size[a]+=size[b];if(lessbytes(names[minimum[b]],names[minimum[a]]))minimum[a]=minimum[b];}
  U person(S s){return minimum[root(intern(s))];}
@@ -108,13 +127,27 @@ static_assert(sizeof(Raw)==24);
 struct Event{I ts,revenue;U person,category;};struct Session{I ts,revenue;U person;};struct Click{I ts;S id;U person,campaign;};struct Total{I sessions=0,purchases=0,revenue=0,assists=0;};
 // A contiguous event-ID table avoids a node allocation and pointer chase for
 // every event. Hash collisions always compare the complete decoded ID.
+inline Q event_hash(S id){Q code=PackedIds::key(id);return code?ankerl::unordered_dense::hash<Q>{}(code):ankerl::unordered_dense::hash<S>{}(id);}
 struct EventIndex{
- struct Slot{size_t hash=0;U index=NONE;};std::vector<Slot>slots;size_t used=0;
- static S key(S row){S id=row.substr(0,row.find(','));if(id.size()>=2&&id.front()=='"'){id.remove_prefix(1);id.remove_suffix(1);}return id;}
+ struct Slot{Q fingerprint=0;U index=NONE;bool packed=false;};std::vector<Slot>slots;size_t used=0;
+ static_assert(sizeof(Slot)==16);
  void allocate(size_t count){size_t n=1024;while(n<count*10/7+1)n*=2;slots.resize(n);}
- void grow(std::vector<Raw>&rows){auto old=std::move(slots);slots.resize(old.size()*2);for(auto&s:old)if(s.index!=NONE){size_t p=s.hash&(slots.size()-1);while(slots[p].index!=NONE)p=(p+1)&(slots.size()-1);slots[p]=s;}}
- void add(const Raw& row,std::vector<Raw>&rows){if((used+1)*10>slots.size()*7)grow(rows);S id=row.key();size_t h=std::hash<S>{}(id),p=h&(slots.size()-1);while(slots[p].index!=NONE){auto&s=slots[p];if(s.hash==h&&rows[s.index].key()==id){if(row.ingest<rows[s.index].ingest)rows[s.index]=row;return;}p=(p+1)&(slots.size()-1);}if(rows.size()>=NONE)throw std::runtime_error("too many events");slots[p]={h,U(rows.size())};rows.push_back(row);used++;}
+ void grow(std::vector<Raw>&rows){auto old=std::move(slots);slots.resize(old.size()*2);
+  for(auto&s:old)if(s.index!=NONE){Q h=s.packed?ankerl::unordered_dense::hash<Q>{}(s.fingerprint):s.fingerprint;
+   size_t p=h&(slots.size()-1);while(slots[p].index!=NONE)p=(p+1)&(slots.size()-1);slots[p]=s;}}
+ void add(const Raw&row,std::vector<Raw>&rows){
+  if((used+1)*10>slots.size()*7)grow(rows);S id=row.key();Q code=PackedIds::key(id);
+  Q h=code?ankerl::unordered_dense::hash<Q>{}(code):ankerl::unordered_dense::hash<S>{}(id),fingerprint=code?code:h;
+  size_t p=h&(slots.size()-1);while(slots[p].index!=NONE){auto&s=slots[p];
+   if(s.fingerprint==fingerprint&&s.packed==bool(code)&&(code||rows[s.index].key()==id)){
+    if(row.ingest<rows[s.index].ingest)rows[s.index]=row;return;
+   }p=(p+1)&(slots.size()-1);
+  }
+  if(rows.size()>=NONE)throw std::runtime_error("too many events");
+  slots[p]={fingerprint,U(rows.size()),bool(code)};rows.push_back(row);used++;
+ }
 };
+
 #include "parallel_event_dedup.hpp"
 #include "parallel_event_validate.hpp"
 #include "parallel_clicks.hpp"

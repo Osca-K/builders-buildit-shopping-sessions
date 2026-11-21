@@ -29,7 +29,7 @@ inline std::vector<Raw> deduplicate_parallel(Input& input, const std::vector<fs:
     if(cancelled.load(std::memory_order_relaxed))break;
     lf=(const char*)memchr(p,'\n',end-p);const char*last=lf?lf:end;S row(p,last-p);p=lf?lf+1:end;
     std::array<S,7> f;I ingest;Q layout;if(!parse(row,f,&layout)||f[0].empty()||!f1(f[3],ingest))continue;
-    unsigned shard=std::hash<S>{}(f[0])>>(BITS-5);buckets[fi][shard].push_back({row.data(),ingest,layout});
+    unsigned shard=event_hash(f[0])>>(BITS-5);buckets[fi][shard].push_back({row.data(),ingest,layout});
    }
    for(auto&b:buckets[fi])if(b.capacity()>b.size()){std::vector<Raw> compact(b.begin(),b.end());b.swap(compact);}
   }

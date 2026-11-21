@@ -59,3 +59,15 @@ fixtures and the long-identifier fixture passed. Build-time differential checks
 compare 1.4 million valid/malformed CSV cases and over 123,000 timestamp cases
 against the preceding parsers, and check arbitrary-byte and independently owned
 long map keys. These local measurements do not establish an official score.
+
+ASCII identifiers of up to nine bytes can now be represented exactly in 64 bits:
+their seven-bit bytes are followed by a length sentinel. Longer or non-ASCII
+identifiers retain the general string map. Event-index slots remain 16 bytes;
+packed codes compare directly and fallback hashes always compare complete IDs.
+This representation also preserves embedded zero bytes and case distinctions.
+
+Three alternating 20M-event/5M-click runs at 8 CPUs and 8GB measured engine
+medians of 15.354s versus 16.564s for the preceding release (7.3% lower).
+Both output multisets matched exactly, all 37 fixtures passed, and image-build
+checks cover packed-byte round trips, arbitrary-string fallback, and event-index
+growth with 30,000 copies of 10,000 IDs. Official scoring is separate.
