@@ -14,4 +14,4 @@ subprocess.run(['docker','run','--rm','--network','none','--read-only',
     '--tmpfs','/tmp:rw,size=64m','-e','DATA_DIR=/data','-e','OUTPUT_DIR=/output',
     '-e','SCRATCH_DIR=/output/scratch','-e','HOME=/output/scratch','-e','NCPU=4','-e','MEM_GB=12',
     '-v',f'{data}:/data:ro','-v',f'{output}:/output','--entrypoint','sh','shopping',
-    '-c','umask 000; exec python -u /app/compiled_pipeline.py'],check=True)
+    '-c','umask 000; exec /bin/sh /app/run_compiled.sh'],check=True)

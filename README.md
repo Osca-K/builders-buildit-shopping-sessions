@@ -2,7 +2,8 @@
 
 Exact C++20 pipeline with strict raw-line CSV validation, transitive identity
 components, deduplication before event validation, session attribution, and rolling
-campaign counts. DuckDB writes the final aggregate tables as Parquet. Inputs and
+campaign counts. The standalone DuckDB CLI writes the final aggregate tables as
+Parquet without Python startup overhead. Inputs and
 outputs use the official environment variables. Event deduplication, validation,
 and click parsing run in parallel; complete IDs resolve every hash collision.
 
