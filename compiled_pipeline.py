@@ -26,7 +26,7 @@ def main():
         dest=output/table;dest.mkdir(parents=True,exist_ok=True)
         schema='{'+','.join(quote(k)+':'+quote(v) for k,v in columns.items())+'}'
         select=','.join("DATE '1970-01-01'+day AS day" if c=='day' else '"'+c+'"' for c in columns)
-        con.execute(f"COPY (SELECT {select} FROM read_csv({quote(scratch/(table+'.csv'))},header=true,columns={schema},delim=',',quote='\"',escape='\"',new_line='\\n',allow_quoted_nulls=false)) TO {quote(dest/'part-0.parquet')} (FORMAT PARQUET,COMPRESSION ZSTD)")
+        con.execute(f"COPY (SELECT {select} FROM read_csv({quote(scratch/(table+'.csv'))},header=true,columns={schema},delim=',',quote='\"',escape='\"',new_line='\\n',allow_quoted_nulls=false)) TO {quote(dest/'part-0.parquet')} (FORMAT PARQUET,COMPRESSION SNAPPY)")
     print(f'Compiled pipeline total: {time.perf_counter()-started:.3f}s',flush=True)
 
 

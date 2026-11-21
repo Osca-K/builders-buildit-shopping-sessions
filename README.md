@@ -26,3 +26,8 @@ The next revision replaces global event/click sorting with counting partitioning
 by canonical person, followed by parallel sorting of independent histories.
 All36 official fixtures and the exact20M independent SQL comparison pass.
 Local20M run:29.450 seconds; performance still depends on hardware and load.
+
+Parquet output uses Snappy compression to reduce serialization CPU. On the same
+20M workload under concurrent CAD download load, it reduced total runtime from
+37.387 to 36.874 seconds while matching all 2,249,563 user-day rows and 28,014
+campaign-day rows exactly. The output is about 5 MB larger on that workload.
