@@ -1,0 +1,7 @@
+FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends rustc && rm -rf /var/lib/apt/lists/*
+COPY generator/src /src
+RUN rustc --edition=2024 -O -C panic=abort /src/main.rs -o /generate
+FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
+COPY --from=build /generate /generate
+ENTRYPOINT ["/generate"]
