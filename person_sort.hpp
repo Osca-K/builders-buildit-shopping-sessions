@@ -12,14 +12,19 @@ void sort_person_histories(std::vector<Record>& records,size_t people,unsigned r
  auto cursor=offsets;std::vector<Record> grouped(records.size());
  for(const auto&r:records)grouped[cursor[r.person]++]=r;
  records.swap(grouped);std::vector<Record>().swap(grouped);
- std::vector<U> jobs;for(U p=0;p<people;++p)if(offsets[p+1]-offsets[p]>1)jobs.push_back(p);
- // Schedule the largest histories first so a late whale cannot stall the tail.
- std::sort(jobs.begin(),jobs.end(),[&](U a,U b){return offsets[a+1]-offsets[a]>offsets[b+1]-offsets[b];});
+ std::vector<U> large,small;
+ for(U p=0;p<people;++p){auto n=offsets[p+1]-offsets[p];if(n>256)large.push_back(p);else if(n>1)small.push_back(p);}
+ // Schedule whales first. Small histories retain contiguous person order and
+ // share one atomic claim per batch instead of one claim per person.
+ std::sort(large.begin(),large.end(),[&](U a,U b){return offsets[a+1]-offsets[a]>offsets[b+1]-offsets[b];});
  unsigned threads=std::max(1u,std::min({requested,std::max(1u,std::thread::hardware_concurrency()),8u}));
- std::atomic<size_t> next{0};std::vector<std::jthread>workers;
+ std::atomic<size_t> next{0},next_small{0};std::vector<std::jthread>workers;
  for(unsigned t=0;t<threads;++t)workers.emplace_back([&]{
-  for(;;){size_t job=next.fetch_add(1,std::memory_order_relaxed);if(job>=jobs.size())break;
-   U p=jobs[job];std::sort(records.begin()+offsets[p],records.begin()+offsets[p+1],compare);
+  for(;;){size_t job=next.fetch_add(1,std::memory_order_relaxed);if(job>=large.size())break;
+   U p=large[job];std::sort(records.begin()+offsets[p],records.begin()+offsets[p+1],compare);
+  }
+  for(;;){size_t job=next_small.fetch_add(64,std::memory_order_relaxed);if(job>=small.size())break;
+   for(size_t j=job;j<std::min(job+64,small.size());++j){U p=small[j];std::sort(records.begin()+offsets[p],records.begin()+offsets[p+1],compare);}
   }
  });
  for(auto&w:workers)w.join();

@@ -27,3 +27,9 @@ The next revision replaces global event/click sorting with counting partitioning
 by canonical person, followed by parallel sorting of independent histories.
 All36 official fixtures and the exact20M independent SQL comparison pass.
 Local20M run:29.450 seconds; performance still depends on hardware and load.
+
+Small person histories now share work claims in batches of 64; only large
+histories are sorted by size for scheduling. All 36 fixtures still pass and both
+aggregate tables match the submitted version exactly on 1M and 20M events.
+A warmed 20M comparison on 2 CPUs/3GB measured 47.81s before and 47.29s after.
+This small, load-sensitive improvement does not establish a new leaderboard score.
