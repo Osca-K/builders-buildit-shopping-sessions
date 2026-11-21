@@ -1,0 +1,15 @@
+name: Benchmark 20M public events
+on: workflow_dispatch
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t shopping .
+      - name: Generate independent public workload
+        run: cargo run --release --manifest-path generator/Cargo.toml -- --seed 17 --events 20000000 --clicks 5000000 --output data-large
+      - name: Measure with four CPUs and twelve GB
+        run: mkdir -p output-large scratch-large && chmod 777 output-large scratch-large && /usr/bin/time -v docker run --rm --network none --cpus 4 --memory 12g --memory-swap 12g --read-only --tmpfs /tmp:rw,size=64m --user 1000:1000 -e DATA_DIR=/data -e OUTPUT_DIR=/output -e SCRATCH_DIR=/scratch -e HOME=/scratch -e NCPU=4 -e MEM_GB=12 -e PROFILE_PIPELINE=1 -v "$PWD/data-large:/data:ro" -v "$PWD/output-large:/output" -v "$PWD/scratch-large:/scratch" shopping
+      - name: Check cross-table conservation and unique output keys
+        run: docker run --rm --network none --read-only --entrypoint python -v "$PWD/output-large:/output:ro" -v "$PWD/scripts/check_totals.py:/check.py:ro" shopping /check.py
