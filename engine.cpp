@@ -67,6 +67,7 @@ struct EventIndex{
 #include "parallel_event_dedup.hpp"
 #include "parallel_event_validate.hpp"
 #include "parallel_clicks.hpp"
+#include "person_sort.hpp"
 struct CSV{
  std::vector<char>buffer;std::ofstream out;
  CSV(fs::path p):buffer(1<<20){out.rdbuf()->pubsetbuf(buffer.data(),buffer.size());out.open(p,std::ios::binary|std::ios::trunc);if(!out)throw std::runtime_error("output open failed");}
@@ -83,14 +84,14 @@ int main(int argc,char**argv){try{
  unsigned ncpu=8;if(const char*env=std::getenv("NCPU"))ncpu=std::max(1,std::atoi(env));
  std::vector<Raw>raws=deduplicate_parallel(input,csvs(data/"events"),ncpu);timer.stage("event dedup");
  std::vector<Event>events=validate_events_parallel(raws,people,products,unknown,start,end,ncpu);std::vector<Raw>().swap(raws);timer.stage("event validate");
- std::sort(events.begin(),events.end(),[](auto&a,auto&b){return a.person!=b.person?a.person<b.person:a.ts<b.ts;});timer.stage("event sort");
+ sort_person_histories(events,people.names.size(),ncpu,[](auto&a,auto&b){return a.ts<b.ts;});timer.stage("event sort");
  CSV users(scratch/"user_daily.csv");users.raw("user_id,day,sessions,events,revenue_cents,top_category\n");std::vector<Session>sessions;sessions.reserve(events.size()/4+1);std::vector<I>revenues(categories.names.size(),0);std::vector<U>touched;
  size_t begin=0;while(begin<events.size()){U person=events[begin].person;size_t finish=begin+1;while(finish<events.size()&&events[finish].person==person)finish++;bool have=false;I d=0,ns=0,ne=0,nr=0;
  auto flush=[&](){if(!have)return;U top=NONE;for(U c:touched)if(top==NONE||revenues[c]>revenues[top]||(revenues[c]==revenues[top]&&categories.less(c,top)))top=c;users.str(people.names[person]);users.comma();users.num(d);users.comma();users.num(ns);users.comma();users.num(ne);users.comma();users.num(nr);users.comma();if(top!=NONE&&top)users.str(categories.names[top]);users.nl();for(U c:touched)revenues[c]=0;touched.clear();};
  I prev=0;for(size_t i=begin;i<finish;i++){auto&e=events[i];if(i==begin||e.ts-prev>GAP){I sd=day(e.ts);if(!have||sd!=d){flush();have=true;d=sd;ns=ne=nr=0;}ns++;sessions.push_back({e.ts,0,person});}ne++;nr+=e.revenue;sessions.back().revenue+=e.revenue;if(e.revenue){if(!revenues[e.category])touched.push_back(e.category);revenues[e.category]+=e.revenue;}prev=e.ts;}flush();begin=finish;}
  users.finish();std::vector<Event>().swap(events);timer.stage("session aggregation");
  std::vector<Click>clicks=parse_clicks_parallel(input,csvs(data/"clicks"),people,campaigns,start,end,ncpu);timer.stage("click validate");
- std::sort(clicks.begin(),clicks.end(),[](auto&a,auto&b){if(a.person!=b.person)return a.person<b.person;if(a.ts!=b.ts)return a.ts<b.ts;return lessbytes(a.id,b.id);});timer.stage("click sort");
+ sort_person_histories(clicks,people.names.size(),ncpu,[](auto&a,auto&b){if(a.ts!=b.ts)return a.ts<b.ts;return lessbytes(a.id,b.id);});timer.stage("click sort");
  std::vector<std::unordered_map<I,Total>>totals(campaigns.values.size());std::vector<Q>counts(campaigns.values.size(),0);std::vector<U>positions(campaigns.values.size(),NONE),active;
  auto add=[&](U c){if(counts[c]++==0){positions[c]=active.size();active.push_back(c);}};auto remove=[&](U c){if(--counts[c]==0){U p=positions[c],replacement=active.back();active[p]=replacement;positions[replacement]=p;active.pop_back();positions[c]=NONE;}};
  begin=0;size_t clickcursor=0;while(begin<sessions.size()){U person=sessions[begin].person;size_t finish=begin+1;while(finish<sessions.size()&&sessions[finish].person==person)finish++;while(clickcursor<clicks.size()&&clicks[clickcursor].person<person)clickcursor++;size_t cb=clickcursor,ce=cb;while(ce<clicks.size()&&clicks[ce].person==person)ce++;clickcursor=ce;size_t left=cb,right=cb,best=ce;
@@ -98,3 +99,4 @@ int main(int argc,char**argv){try{
  for(U c:active){counts[c]=0;positions[c]=NONE;}active.clear();begin=finish;}timer.stage("attribution assists");
  CSV output(scratch/"campaign_daily.csv");output.raw("campaign_id,channel,day,sessions,purchasing_sessions,revenue_cents,assisted_sessions\n");for(U c=0;c<campaigns.values.size();c++){auto&info=campaigns.values[c];for(auto&[d,t]:totals[c]){output.str(info.id);output.comma();if(!info.channel.empty())output.str(info.channel);output.comma();output.num(d);output.comma();output.num(t.sessions);output.comma();output.num(t.purchases);output.comma();output.num(t.revenue);output.comma();output.num(t.assists);output.nl();}}output.finish();timer.stage("output");return 0;
  }catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 1;}}
+

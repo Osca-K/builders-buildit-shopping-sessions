@@ -21,3 +21,8 @@ CI also generates the official 1M-event seed-1 dev set and compares its answer.
 
 `Dockerfile.sql` preserves the previous independent SQL implementation.
 `Dockerfile.generator` builds the official public generator for local benchmarks.
+
+The next revision replaces global event/click sorting with counting partitioning
+by canonical person, followed by parallel sorting of independent histories.
+All36 official fixtures and the exact20M independent SQL comparison pass.
+Local20M run:29.450 seconds; performance still depends on hardware and load.
