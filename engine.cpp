@@ -152,6 +152,7 @@ struct EventIndex{
 #include "parallel_event_validate.hpp"
 #include "parallel_clicks.hpp"
 #include "person_sort.hpp"
+#include "fused_events.hpp"
 struct CSV{
  std::vector<char>buffer;std::ofstream out;
  CSV(fs::path p):buffer(1<<20){out.rdbuf()->pubsetbuf(buffer.data(),buffer.size());out.open(p,std::ios::binary|std::ios::trunc);if(!out)throw std::runtime_error("output open failed");}
@@ -166,8 +167,7 @@ int main(int argc,char**argv){try{
  input.rows(data/"campaigns.csv",[&](S row){std::array<S,2>f;if(parse(row,f))campaigns.add(f[0],f[1]);});campaigns.finish();
  for(auto&p:csvs(data/"links"))input.rows(p,[&](S row){std::array<S,2>f;if(parse(row,f)&&!f[0].empty()&&!f[1].empty()){U a=people.intern(f[0]),b=people.intern(f[1]);people.unite(a,b);}});timer.stage("identities");
  unsigned ncpu=8;if(const char*env=std::getenv("NCPU"))ncpu=std::max(1,std::atoi(env));
- std::vector<Raw>raws=deduplicate_parallel(input,csvs(data/"events"),ncpu);timer.stage("event dedup");
- std::vector<Event>events=validate_events_parallel(raws,people,products,unknown,start,end,ncpu);std::vector<Raw>().swap(raws);timer.stage("event validate");
+ std::vector<Event>events=fused_events(input,csvs(data/"events"),people,products,unknown,start,end,ncpu);timer.stage("event parse/dedup/validate");
  sort_person_histories(events,people.names.size(),ncpu,[](auto&a,auto&b){return a.ts<b.ts;});timer.stage("event sort");
  CSV users(scratch/"user_daily.csv");users.raw("user_id,day,sessions,events,revenue_cents,top_category\n");std::vector<Session>sessions;sessions.reserve(events.size()/4+1);std::vector<I>revenues(categories.names.size(),0);std::vector<U>touched;
  size_t begin=0;while(begin<events.size()){U person=events[begin].person;size_t finish=begin+1;while(finish<events.size()&&events[finish].person==person)finish++;bool have=false;I d=0,ns=0,ne=0,nr=0;

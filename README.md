@@ -71,3 +71,16 @@ medians of 15.354s versus 16.564s for the preceding release (7.3% lower).
 Both output multisets matched exactly, all 37 fixtures passed, and image-build
 checks cover packed-byte round trips, arbitrary-string fallback, and event-index
 growth with 30,000 copies of 10,000 IDs. Official scoring is separate.
+
+The event input pass now also decodes timestamps, validates payloads and resolves
+identities. Invalid parsed copies remain tombstones until earliest-ingest dedup
+chooses the winner. Complete-line 4MiB work chunks balance skewed input files;
+thread-local unknown identities and long event IDs are remapped before dedup.
+Decoded 40-byte candidates replace the global raw-row merge and second CSV read.
+
+Three isolated 20M/5M comparisons at 8 CPUs and 8GB measured engine medians of
+12.679s versus 16.256s for the preceding version (22.0% lower); all three pairs
+improved and both output table multisets matched exactly. The 36 official
+fixtures, long-row case and a 270,000-row long UTF-8 ID case all passed. The new
+case crosses input chunks, changes users on later duplicates, keeps invalid
+earliest copies and checks an unused linked ID as canonical name.
