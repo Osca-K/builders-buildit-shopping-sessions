@@ -5,6 +5,7 @@ obey the challenge dialect. Connected components use union-find, including IDs
 with no events. Assists merge per-person/campaign intervals before joining sessions.
 """
 import json
+import mmap
 import os
 from pathlib import Path
 import re
@@ -30,11 +31,30 @@ def raw_rows(folder, count):
     paths = sorted(Path(folder).glob('*.csv'))
     if not paths:
         return 'SELECT NULL::VARCHAR[] AS f WHERE false'
-    files = '[' + ','.join(quote(p.as_posix()) for p in paths) + ']'
+    fast, strict = [], []
+    for path in paths:
+        if path.stat().st_size == 0:
+            continue
+        with path.open('rb') as handle, mmap.mmap(handle.fileno(),0,access=mmap.ACCESS_READ) as content:
+            # DuckDB's CSV reader treats CR as a line ending, unlike the rules.
+            # Exceptional files retain the exact-byte text parser. The delimiter
+            # must also be absent from values before the parallel line fast path.
+            (strict if content.find(b'\r') >= 0 or content.find(b'\x1f') >= 0 else fast).append(path)
+    def file_list(items):
+        return '[' + ','.join(quote(p.as_posix()) for p in items) + ']'
+    sources=[]
+    if fast:
+        sources.append(f"SELECT line FROM read_csv({file_list(fast)},columns={{'line':'VARCHAR'}},"
+                       "delim=chr(31),quote='',escape='',header=false,skip=1,new_line='\\n',"
+                       "strict_mode=false,parallel=true)")
+    if strict:
+        sources.append(f"SELECT unnest(string_split(content, chr(10))[2:]) AS line FROM read_text({file_list(strict)})")
+    if not sources:
+        return 'SELECT NULL::VARCHAR[] AS f WHERE false'
+    source = ' UNION ALL '.join(sources)
     return f"""SELECT list_transform(string_split(line, ','),
         x -> CASE WHEN starts_with(x, '"') THEN x[2:-2] ELSE x END) AS f
-        FROM (SELECT unnest(string_split(content, chr(10))[2:]) AS line
-              FROM read_text({files}))
+        FROM ({source})
         WHERE regexp_full_match(line, {quote(valid)})"""
 
 
