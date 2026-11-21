@@ -44,3 +44,18 @@ precedes validation, and hash collisions compare complete decoded identifiers.
 Two alternating 20M-event/5M-click runs on 2 CPUs and 3GB measured median engine
 time 38.183s versus 52.207s for the submitted version (26.9% lower). Both output
 tables matched exactly. This is a local benchmark, not a hidden leaderboard score.
+
+CSV rows of 32 to 255 bytes now use bounded AVX2 delimiter and quote scans.
+The final vector overlaps the previous bytes and masks them out, so no load
+reads outside the row. Quoted-field endpoints and total quote counts preserve
+the strict dialect; short and long rows retain the general parser. Map keys up
+to 15 bytes are stored inline, with complete length-aware string comparisons for
+longer keys. Timestamp dispatch checks the required date separator directly.
+
+On generated 20M events and 5M clicks at 8 CPUs and 3GB, two alternating runs
+measured median engine times of 17.821s versus 19.279s for the current release
+(7.6% lower). Both aggregate output multisets matched exactly. All 36 official
+fixtures and the long-identifier fixture passed. Build-time differential checks
+compare 1.4 million valid/malformed CSV cases and over 123,000 timestamp cases
+against the preceding parsers, and check arbitrary-byte and independently owned
+long map keys. These local measurements do not establish an official score.

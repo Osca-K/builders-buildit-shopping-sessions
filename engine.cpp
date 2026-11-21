@@ -21,10 +21,25 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "unordered_dense.h"
+#include <immintrin.h>
 namespace fs=std::filesystem;
 using S=std::string_view;using U=uint32_t;using I=int64_t;using Q=uint64_t;
 constexpr I DAY=86400000,WEEK=604800000,GAP=1800000;constexpr U NONE=UINT32_MAX;
-template<class V>using Map=ankerl::unordered_dense::map<S,V>;
+// Inline short keys avoid reading a second, randomly located CSV page on every
+// identity comparison. Long keys retain the input-owned exact string view.
+struct InlineKey{
+ Q lo=0,hi=0;
+ InlineKey(S s){if(s.size()<=15){if(!s.empty())std::memcpy(this,s.data(),s.size());hi|=Q(s.size())<<56;}
+  else{lo=reinterpret_cast<uintptr_t>(s.data());hi=Q(s.size())|(Q(1)<<63);}}
+ bool large()const{return hi>>63;}
+ S long_view()const{return S(reinterpret_cast<const char*>(uintptr_t(lo)),hi&~(Q(1)<<63));}
+ bool operator==(const InlineKey&other)const{if(hi!=other.hi)return false;return large()?long_view()==other.long_view():lo==other.lo;}
+};
+static_assert(sizeof(InlineKey)==16);
+struct InlineKeyHash{using is_avalanching=void;Q operator()(const InlineKey&key)const{
+ if(key.large())return ankerl::unordered_dense::hash<S>{}(key.long_view());
+ return ankerl::unordered_dense::detail::wyhash::hash(&key,sizeof(key));}};
+template<class V>using Map=ankerl::unordered_dense::map<InlineKey,V,InlineKeyHash>;
 bool lessbytes(S a,S b){auto n=std::min(a.size(),b.size());int c=n?std::memcmp(a.data(),b.data(),n):0;return c<0||(c==0&&a.size()<b.size());}
 struct File{
  int fd=-1;const char*data=nullptr;size_t size=0;
@@ -35,12 +50,37 @@ struct Input{
  std::vector<std::unique_ptr<File>>files;
  template<class F>void rows(const fs::path&p,F fn){auto f=std::make_unique<File>(p);auto ptr=f->data;auto size=f->size;files.push_back(std::move(f));size_t off=0;bool header=true;while(off<size){auto start=ptr+off;auto lf=(const char*)memchr(start,'\n',size-off);size_t n=lf?lf-start:size-off;off+=n+(lf?1:0);if(header){header=false;continue;}fn(S(start,n));}}
 };
-template<size_t N>bool parse(S row,std::array<S,N>&out,Q* layout=nullptr){if(layout)*layout=row.size()>255?(Q(1)<<63)|row.size():0;size_t begin=0;for(size_t i=0;i<N;i++){auto comma=row.find(',',begin);if(i+1<N){if(comma==S::npos)return false;}else if(comma!=S::npos)return false;size_t end=comma==S::npos?row.size():comma;if(layout&&row.size()<=255)*layout|=Q(end)<<(i*8);S s=row.substr(begin,end-begin);if(!s.empty()&&s.front()=='"'){if(s.size()<2||s.back()!='"')return false;s.remove_prefix(1);s.remove_suffix(1);if(s.find('"')!=S::npos)return false;}else if(s.find('"')!=S::npos)return false;out[i]=s;begin=end+1;}return true;}
+template<size_t N>bool parse_general(S row,std::array<S,N>&out,Q* layout=nullptr){if(layout)*layout=row.size()>255?(Q(1)<<63)|row.size():0;size_t begin=0;for(size_t i=0;i<N;i++){auto comma=row.find(',',begin);if(i+1<N){if(comma==S::npos)return false;}else if(comma!=S::npos)return false;size_t end=comma==S::npos?row.size():comma;if(layout&&row.size()<=255)*layout|=Q(end)<<(i*8);S s=row.substr(begin,end-begin);if(!s.empty()&&s.front()=='"'){if(s.size()<2||s.back()!='"')return false;s.remove_prefix(1);s.remove_suffix(1);if(s.find('"')!=S::npos)return false;}else if(s.find('"')!=S::npos)return false;out[i]=s;begin=end+1;}return true;}
+
+// Read only bytes inside the row. The overlapping final vector is masked, so
+// short rows and files ending immediately after the last field remain safe.
+template<size_t N>bool parse(S row,std::array<S,N>&out,Q* layout=nullptr){
+ if constexpr(N<4)return parse_general(row,out,layout);
+ if(row.size()<32||row.size()>255)return parse_general(row,out,layout);
+ std::array<unsigned,N> ends{};unsigned count=0,quotes=0;
+ auto scan=[&](size_t at,unsigned mask){
+  auto bytes=_mm256_loadu_si256(reinterpret_cast<const __m256i*>(row.data()+at));
+  unsigned commas=unsigned(_mm256_movemask_epi8(_mm256_cmpeq_epi8(bytes,_mm256_set1_epi8(','))))&mask;
+  quotes+=__builtin_popcount(unsigned(_mm256_movemask_epi8(_mm256_cmpeq_epi8(bytes,_mm256_set1_epi8('"'))))&mask);
+  while(commas){if(count==N-1)return false;ends[count++]=unsigned(at)+__builtin_ctz(commas);commas&=commas-1;}
+  return true;
+ };
+ size_t at=0;for(;at+32<=row.size();at+=32)if(!scan(at,~0u))return false;
+ if(at<row.size()){unsigned skip=32-unsigned(row.size()-at);if(!scan(row.size()-32,~((1u<<skip)-1)))return false;}
+ if(count!=N-1)return false;ends[N-1]=row.size();
+ if(layout)*layout=0;unsigned begin=0,expected_quotes=0;
+ for(unsigned i=0;i<N;++i){unsigned end=ends[i];S field(row.data()+begin,end-begin);
+  if(!field.empty()&&field.front()=='"'){if(field.size()<2||field.back()!='"')return false;field.remove_prefix(1);field.remove_suffix(1);expected_quotes+=2;}
+  out[i]=field;if(layout)*layout|=Q(end)<<(i*8);begin=end+1;
+ }
+ return quotes==expected_quotes;
+}
+
 std::vector<fs::path>csvs(fs::path dir){std::vector<fs::path>r;if(fs::exists(dir))for(auto&e:fs::directory_iterator(dir))if(e.is_regular_file()&&e.path().extension()==".csv")r.push_back(e.path());std::sort(r.begin(),r.end());return r;}
 bool digit(char c){return c>='0'&&c<='9';}
 bool digs(S s,size_t p,size_t n,int&v){if(p+n>s.size())return false;v=0;for(size_t i=0;i<n;i++){char c=s[p+i];if(!digit(c))return false;v=v*10+c-'0';}return true;}
 I civil(int y,unsigned m,unsigned d){y-=m<=2;int era=(y>=0?y:y-399)/400;unsigned yy=y-era*400,mp=m>2?m-3:m+9;return I(era)*146097+(yy*365+yy/4-yy/100+(153*mp+2)/5+d-1)-719468;}
-bool ts(S s,I&v){if(s.empty())return false;if((s.size()!=20&&s.size()!=25)||s.find_first_not_of("0123456789")==S::npos){Q n=0;for(char c:s){if(!digit(c))return false;unsigned d=c-'0';if(n>(Q(INT64_MAX)-d)/10)return false;n=n*10+d;}v=n;return true;}if(s[4]!='-'||s[7]!='-'||s[10]!='T'||s[13]!=':'||s[16]!=':')return false;int y,m,d,h,mi,se;if(!digs(s,0,4,y)||!digs(s,5,2,m)||!digs(s,8,2,d)||!digs(s,11,2,h)||!digs(s,14,2,mi)||!digs(s,17,2,se))return false;static int md[]={31,28,31,30,31,30,31,31,30,31,30,31};if(m<1||m>12||d<1||d>md[m-1]+(m==2&&y%4==0&&(y%100!=0||y%400==0))||h>23||mi>59||se>59)return false;I offset=0;if(s.size()==20){if(s[19]!='Z')return false;}else{int oh,om;if((s[19]!='+'&&s[19]!='-')||s[22]!=':'||!digs(s,20,2,oh)||!digs(s,23,2,om)||oh>23||om>59)return false;offset=(oh*60+om)*(s[19]=='-'?-1:1);}v=civil(y,m,d)*DAY+I(h*3600+mi*60+se)*1000-offset*60000;return true;}
+bool ts(S s,I&v){if(s.empty())return false;if((s.size()!=20&&s.size()!=25)||s[4]!='-'){Q n=0;for(char c:s){if(!digit(c))return false;unsigned d=c-'0';if(n>(Q(INT64_MAX)-d)/10)return false;n=n*10+d;}v=n;return true;}if(s[4]!='-'||s[7]!='-'||s[10]!='T'||s[13]!=':'||s[16]!=':')return false;int y,m,d,h,mi,se;if(!digs(s,0,4,y)||!digs(s,5,2,m)||!digs(s,8,2,d)||!digs(s,11,2,h)||!digs(s,14,2,mi)||!digs(s,17,2,se))return false;static int md[]={31,28,31,30,31,30,31,31,30,31,30,31};if(m<1||m>12||d<1||d>md[m-1]+(m==2&&y%4==0&&(y%100!=0||y%400==0))||h>23||mi>59||se>59)return false;I offset=0;if(s.size()==20){if(s[19]!='Z')return false;}else{int oh,om;if((s[19]!='+'&&s[19]!='-')||s[22]!=':'||!digs(s,20,2,oh)||!digs(s,23,2,om)||oh>23||om>59)return false;offset=(oh*60+om)*(s[19]=='-'?-1:1);}v=civil(y,m,d)*DAY+I(h*3600+mi*60+se)*1000-offset*60000;return true;}
 bool f1(S s,I&v){return s.size()==20&&s[19]=='Z'&&ts(s,v);}
 bool price(S s,I&v){if(s.empty())return false;I n=0;for(char c:s){if(!digit(c))return false;n=n*10+c-'0';if(n>10000000)return false;}v=n;return n>0;}
 I day(I ms){return ms/DAY-(ms%DAY<0);}
