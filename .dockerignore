@@ -1,0 +1,10 @@
+.git
+.github
+fixtures
+scripts
+generator
+dev-answer
+dev
+output
+scratch
+__pycache__
