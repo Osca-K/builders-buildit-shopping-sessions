@@ -33,3 +33,14 @@ histories are sorted by size for scheduling. All 36 fixtures still pass and both
 aggregate tables match the submitted version exactly on 1M and 20M events.
 A warmed 20M comparison on 2 CPUs/3GB measured 47.81s before and 47.29s after.
 This small, load-sensitive improvement does not establish a new leaderboard score.
+
+Identity and product lookups now use the MIT-licensed ankerl::unordered_dense
+4.8.1, pinned at 3234af2c03549bc85656bfd3a86993bf1cd8aef1 from
+https://github.com/martinus/unordered_dense. Headers and license are vendored.
+Event rows retain validated CSV field boundaries in their existing 24-byte record;
+rows longer than 255 bytes use the original general parser. Deduplication still
+precedes validation, and hash collisions compare complete decoded identifiers.
+
+Two alternating 20M-event/5M-click runs on 2 CPUs and 3GB measured median engine
+time 38.183s versus 52.207s for the submitted version (26.9% lower). Both output
+tables matched exactly. This is a local benchmark, not a hidden leaderboard score.

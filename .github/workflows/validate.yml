@@ -10,6 +10,10 @@ jobs:
       - run: docker build -t shopping .
       - name: Official fixtures
         run: python scripts/run_fixtures.py fixtures -- python scripts/run_container.py
+      - name: Long identifiers and deduplication boundary
+        run: |
+          python scripts/generate_boundary_fixture.py boundary-fixtures
+          python scripts/run_fixtures.py boundary-fixtures -- python scripts/run_container.py
       - name: Generate official seed-1 dev set
         run: cargo run --release --manifest-path generator/Cargo.toml -- --seed 1 --events 1000000 --clicks 250000 --output dev
       - name: Dev run with scorer filesystem restrictions and smaller CI resources

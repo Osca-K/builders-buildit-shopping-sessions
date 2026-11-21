@@ -11,7 +11,7 @@ inline std::vector<Event> validate_events_parallel(const std::vector<Raw>& raw,P
   size_t q=raw.size()/threads,r=raw.size()%threads,a=q*tid+std::min<size_t>(tid,r),b=a+q+(tid<r);auto&out=local[tid];out.events.reserve(b-a);
   for(size_t i=a;i<b;i++){
    if(((i-a)&4095u)==0&&cancelled.load(std::memory_order_relaxed))return;
-   const auto&r=raw[i];std::array<S,7>f;if(!parse(r.row,f)||f[1].empty()||f[5].empty())continue;
+   const auto&r=raw[i];std::array<S,7>f;if(!r.fields(f)||f[1].empty()||f[5].empty())continue;
    bool purchase=f[4]=="purchase";if(!purchase&&f[4]!="view"&&f[4]!="cart")continue;
    I t,revenue=0;if(!ts(f[2],t)||t<start||t>=end||r.ingest-t>DAY||(purchase&&!price(f[6],revenue)))continue;
    U category=0;if(purchase){auto p=products.find(f[5]);category=p==products.end()?unknown:p->second;}

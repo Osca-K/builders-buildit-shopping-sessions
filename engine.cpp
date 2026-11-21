@@ -20,10 +20,11 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "unordered_dense.h"
 namespace fs=std::filesystem;
 using S=std::string_view;using U=uint32_t;using I=int64_t;using Q=uint64_t;
 constexpr I DAY=86400000,WEEK=604800000,GAP=1800000;constexpr U NONE=UINT32_MAX;
-template<class V>using Map=std::unordered_map<S,V>;
+template<class V>using Map=ankerl::unordered_dense::map<S,V>;
 bool lessbytes(S a,S b){auto n=std::min(a.size(),b.size());int c=n?std::memcmp(a.data(),b.data(),n):0;return c<0||(c==0&&a.size()<b.size());}
 struct File{
  int fd=-1;const char*data=nullptr;size_t size=0;
@@ -34,7 +35,7 @@ struct Input{
  std::vector<std::unique_ptr<File>>files;
  template<class F>void rows(const fs::path&p,F fn){auto f=std::make_unique<File>(p);auto ptr=f->data;auto size=f->size;files.push_back(std::move(f));size_t off=0;bool header=true;while(off<size){auto start=ptr+off;auto lf=(const char*)memchr(start,'\n',size-off);size_t n=lf?lf-start:size-off;off+=n+(lf?1:0);if(header){header=false;continue;}fn(S(start,n));}}
 };
-template<size_t N>bool parse(S row,std::array<S,N>&out){size_t begin=0;for(size_t i=0;i<N;i++){auto comma=row.find(',',begin);if(i+1<N){if(comma==S::npos)return false;}else if(comma!=S::npos)return false;size_t end=comma==S::npos?row.size():comma;S s=row.substr(begin,end-begin);if(!s.empty()&&s.front()=='"'){if(s.size()<2||s.back()!='"')return false;s.remove_prefix(1);s.remove_suffix(1);if(s.find('"')!=S::npos)return false;}else if(s.find('"')!=S::npos)return false;out[i]=s;begin=end+1;}return true;}
+template<size_t N>bool parse(S row,std::array<S,N>&out,Q* layout=nullptr){if(layout)*layout=row.size()>255?(Q(1)<<63)|row.size():0;size_t begin=0;for(size_t i=0;i<N;i++){auto comma=row.find(',',begin);if(i+1<N){if(comma==S::npos)return false;}else if(comma!=S::npos)return false;size_t end=comma==S::npos?row.size():comma;if(layout&&row.size()<=255)*layout|=Q(end)<<(i*8);S s=row.substr(begin,end-begin);if(!s.empty()&&s.front()=='"'){if(s.size()<2||s.back()!='"')return false;s.remove_prefix(1);s.remove_suffix(1);if(s.find('"')!=S::npos)return false;}else if(s.find('"')!=S::npos)return false;out[i]=s;begin=end+1;}return true;}
 std::vector<fs::path>csvs(fs::path dir){std::vector<fs::path>r;if(fs::exists(dir))for(auto&e:fs::directory_iterator(dir))if(e.is_regular_file()&&e.path().extension()==".csv")r.push_back(e.path());std::sort(r.begin(),r.end());return r;}
 bool digit(char c){return c>='0'&&c<='9';}
 bool digs(S s,size_t p,size_t n,int&v){if(p+n>s.size())return false;v=0;for(size_t i=0;i<n;i++){char c=s[p+i];if(!digit(c))return false;v=v*10+c-'0';}return true;}
@@ -54,7 +55,17 @@ struct People{
 struct Categories{Map<U>ids;std::vector<S>names={S{}};U intern(S s){if(s.empty())return 0;auto it=ids.find(s);if(it!=ids.end())return it->second;U id=names.size();ids.emplace(s,id);names.push_back(s);return id;}bool less(U a,U b){if(!a)return false;if(!b)return true;return lessbytes(names[a],names[b]);}};
 struct Campaign{S id,channel;};
 struct Campaigns{Map<U>ids;std::vector<Campaign>values;U organic;void add(S id,S channel){if(id.empty())return;auto it=ids.find(id);if(it!=ids.end()){values[it->second].channel=channel;return;}U i=values.size();ids.emplace(id,i);values.push_back({id,channel});}void finish(){organic=values.size();values.push_back({"organic","organic"});}};
-struct Raw{S row;I ingest;};struct Event{I ts,revenue;U person,category;};struct Session{I ts,revenue;U person;};struct Click{I ts;S id;U person,campaign;};struct Total{I sessions=0,purchases=0,revenue=0,assists=0;};
+// Seven byte-sized field ends fit in the space formerly used for row length.
+// Oversize rows retain their full length and use the general parser.
+struct Raw{
+ const char* data;I ingest;Q layout;
+ S row()const{return S(data,layout>>63?layout&~(Q(1)<<63):(layout>>48)&255);}
+ S field(unsigned i)const{size_t a=i?((layout>>((i-1)*8))&255)+1:0,b=(layout>>(i*8))&255;S s(data+a,b-a);if(!s.empty()&&s.front()=='"'){s.remove_prefix(1);s.remove_suffix(1);}return s;}
+ bool fields(std::array<S,7>&out)const{if(layout>>63)return parse(row(),out);for(unsigned i=0;i<7;i++)out[i]=field(i);return true;}
+ S key()const{if(!(layout>>63))return field(0);S s=row();s=s.substr(0,s.find(','));if(s.size()>=2&&s.front()=='"'){s.remove_prefix(1);s.remove_suffix(1);}return s;}
+};
+static_assert(sizeof(Raw)==24);
+struct Event{I ts,revenue;U person,category;};struct Session{I ts,revenue;U person;};struct Click{I ts;S id;U person,campaign;};struct Total{I sessions=0,purchases=0,revenue=0,assists=0;};
 // A contiguous event-ID table avoids a node allocation and pointer chase for
 // every event. Hash collisions always compare the complete decoded ID.
 struct EventIndex{
@@ -62,7 +73,7 @@ struct EventIndex{
  static S key(S row){S id=row.substr(0,row.find(','));if(id.size()>=2&&id.front()=='"'){id.remove_prefix(1);id.remove_suffix(1);}return id;}
  void allocate(size_t count){size_t n=1024;while(n<count*10/7+1)n*=2;slots.resize(n);}
  void grow(std::vector<Raw>&rows){auto old=std::move(slots);slots.resize(old.size()*2);for(auto&s:old)if(s.index!=NONE){size_t p=s.hash&(slots.size()-1);while(slots[p].index!=NONE)p=(p+1)&(slots.size()-1);slots[p]=s;}}
- void add(S id,S row,I ingest,std::vector<Raw>&rows){if((used+1)*10>slots.size()*7)grow(rows);size_t h=std::hash<S>{}(id),p=h&(slots.size()-1);while(slots[p].index!=NONE){auto&s=slots[p];if(s.hash==h&&key(rows[s.index].row)==id){if(ingest<rows[s.index].ingest)rows[s.index]={row,ingest};return;}p=(p+1)&(slots.size()-1);}if(rows.size()>=NONE)throw std::runtime_error("too many events");slots[p]={h,U(rows.size())};rows.push_back({row,ingest});used++;}
+ void add(const Raw& row,std::vector<Raw>&rows){if((used+1)*10>slots.size()*7)grow(rows);S id=row.key();size_t h=std::hash<S>{}(id),p=h&(slots.size()-1);while(slots[p].index!=NONE){auto&s=slots[p];if(s.hash==h&&rows[s.index].key()==id){if(row.ingest<rows[s.index].ingest)rows[s.index]=row;return;}p=(p+1)&(slots.size()-1);}if(rows.size()>=NONE)throw std::runtime_error("too many events");slots[p]={h,U(rows.size())};rows.push_back(row);used++;}
 };
 #include "parallel_event_dedup.hpp"
 #include "parallel_event_validate.hpp"
