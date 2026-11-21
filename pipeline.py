@@ -12,11 +12,11 @@ import sys
 import time
 
 # Workspace development only; ignored when independently published.
-local_runtime = Path(__file__).resolve().parents[2] / '.runtime'
-if not local_runtime.exists():
-    local_runtime = Path(__file__).resolve().parents[2].parent / '.runtime'
-if local_runtime.exists():
-    sys.path.insert(0, str(local_runtime))
+for ancestor in Path(__file__).resolve().parents:
+    local_runtime = ancestor / '.runtime'
+    if local_runtime.exists():
+        sys.path.insert(0, str(local_runtime))
+        break
 import duckdb
 
 
